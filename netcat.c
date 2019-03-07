@@ -69,13 +69,16 @@
 #  include <netinet/ip.h>		/* IPOPT_LSRR, header stuff */
 #  include <netdb.h>		/* hostent, gethostby*, getservby* */
 #  include <arpa/inet.h>		/* inet_ntoa */
+#  define sclose(x) close((x))
 #else
 #  undef IP_OPTIONS
 #  undef SO_REUSEPORT
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
 #  include <windows.h>
-#  pragma comment (lib, "ws2_32") /* winsock support */
+#  ifdef _MSC_VER 
+#    pragma comment (lib, "ws2_32") /* winsock support */
+#  endif
 #  define sclose(x)  closesocket((x))
 #  include "getopt.h"
 #  define sleep(_x)		Sleep((_x)*1000)
@@ -137,9 +140,6 @@ static char unknown[] = "(UNKNOWN)";
 static char p_tcp[] = "tcp";	/* for getservby* */
 static char p_udp[] = "udp";
 
-#ifndef WIN32
-extern int h_errno;
-#endif
 int gatesidx = 0;		/* LSRR hop count */
 int gatesptr = 4;		/* initial LSRR pointer, settable */
 USHORT Single = 1;		/* zero if scanning */
@@ -199,9 +199,8 @@ void helpme();
 
 
 #ifdef WIN32
-/* res_init
-   winsock needs to be initialized. Might as well do it as the res_init
-   call for Win32 */
+/* netcat_win32_init
+   winsock needs to be initialized. */
 
 int netcat_win32_init(void)
 {
@@ -288,26 +287,22 @@ char *winsockstr(int error) {
 		default : return("unknown socket error");
 	}
 }
-#endif
+#endif /* WIN32 */
 
 /* holler :
    fake varargs -- need to do this way because we wind up calling through
    more levels of indirection than vanilla varargs can handle, and not all
    machines have vfprintf/vsyslog/whatever!  6 params oughta be enough. */
-void holler (str, p1, p2, p3, p4, p5, p6)
-  char * str;
-  char * p1, * p2, * p3, * p4, * p5, * p6;
+void holler (char *str, ...)
 {
 	if (o_verbose) {
-		fprintf (stderr, str, p1, p2, p3, p4, p5, p6);
-#ifdef WIN32
-		if (h_errno)
-			fprintf (stderr, ": %s\n",winsockstr(h_errno));
-#else
+		va_list args;
+		va_start(args, str);
+		vfprintf(stderr, str, args);
+		va_end(args);
 		if (errno)			/* this gives funny-looking messages, but */
 			perror (" ");	/* it's more portable than sys_errlist[]... */
 							/* xxx: do something better.  */
-#endif
 		else
 			fprintf (stderr, "\n");
 		fflush (stderr);
@@ -316,12 +311,13 @@ void holler (str, p1, p2, p3, p4, p5, p6)
 
 /* bail :
    error-exit handler, callable from anywhere */
-void bail (str, p1, p2, p3, p4, p5, p6)
-  char * str;
-  char * p1, * p2, * p3, * p4, * p5, * p6;
+void bail (char *str, ...)
 {
-	o_verbose = 1;
-	holler (str, p1, p2, p3, p4, p5, p6);
+	va_list args;
+	va_start(args, str);
+	vfprintf(stderr, str, args);
+	va_end(args);
+
 #ifdef WIN32
 	shutdown(netfd, 0x02);  /* Kirby */
 #endif
@@ -422,9 +418,6 @@ unsigned int findline (char *buf, unsigned int siz) {
    someone else wants to do something about it. */
 int comparehosts (HINF *poop, struct hostent *hp) {
 	errno = 0;
-#ifndef WIN32
-	h_errno = 0;
-#endif
 	/* The DNS spec is officially case-insensitive, but for those times when you
 	   *really* wanna see any and all discrepancies, by all means define this. */
 #ifdef ANAL			
@@ -444,10 +437,11 @@ int comparehosts (HINF *poop, struct hostent *hp) {
    info.  The argument can be a name or [ascii] IP address; it will try its
    damndest to deal with it.  "numeric" governs whether we do any DNS at all,
    and we also check o_verbose for what's appropriate work to do. */
-HINF *gethostpoop (char *name, USHORT numeric) {
-	struct hostent * hostent;
+HINF *gethostpoop (char *name, USHORT numeric)
+{
+	struct hostent *hostent;
 	struct in_addr iaddr;
-	register HINF * poop = NULL;
+	register HINF *poop = NULL;
 	register int x;
 
 /* I really want to strangle the twit who dreamed up all these sockaddr and
@@ -470,9 +464,7 @@ HINF *gethostpoop (char *name, USHORT numeric) {
    things down a bit for a first run, but once it's cached, who cares? */
 
 	errno = 0;
-#ifndef WIN32
-	h_errno = 0;
-#endif
+
 	if (name)
 		poop = (HINF *) Hmalloc (sizeof (HINF));
 	if (! poop)
@@ -480,7 +472,6 @@ HINF *gethostpoop (char *name, USHORT numeric) {
 	strcpy (poop->name, unknown);		/* preload it */
 /* see wzv:workarounds.c for dg/ux return-a-struct inet_addr lossage */
 	iaddr.s_addr = inet_addr (name);
-
 	if (iaddr.s_addr == INADDR_NONE) {	/* here's the great split: names... */
 		if (numeric)
 			bail ("Can't parse %s as an IP address", name);
@@ -488,7 +479,7 @@ HINF *gethostpoop (char *name, USHORT numeric) {
 		if (! hostent)
 			/* failure to look up a name is fatal, since we can't do anything with it */
 			/* XXX: h_errno only if BIND?  look up how telnet deals with this */
-			bail ("%s: forward host lookup failed: h_errno %d", name, h_errno);
+			bail ("%s: forward host lookup failed: h_errno %d - %ld", name, h_errno);
 		strncpy (poop->name, hostent->h_name, sizeof (poop->name));
 		for (x = 0; hostent->h_addr_list[x] && (x < 8); x++) {
 			memcpy (&poop->iaddrs[x], hostent->h_addr_list[x], sizeof (IA));
@@ -714,9 +705,7 @@ doexec (int fd) {
 	an unconnected TCP or UDP socket to listen on.
    Examines various global o_blah flags to figure out what-all to do. */
 int doconnect (IA *rad, USHORT rp, IA *lad, USHORT lp) {
-#ifndef WIN32
 	register int nnetfd;
-#endif
 	register int rr;
 	int x, y;
 
@@ -733,20 +722,12 @@ int doconnect (IA *rad, USHORT rp, IA *lad, USHORT lp) {
 		bail ("Can't get socket");
 	if (nnetfd == 0)		/* might *be* zero if stdin was closed! */
 		nnetfd = dup (nnetfd);	/* so fix it.  Leave the old 0 hanging. */
-#ifdef WIN32
-	rr = setsockopt (nnetfd, SOL_SOCKET, SO_REUSEADDR, (const char FAR *)setsockopt_c, sizeof (setsockopt_c));
-#else
 	x = 1;
-	rr = setsockopt (nnetfd, SOL_SOCKET, SO_REUSEADDR, &x, sizeof (x));
-#endif
+	rr = setsockopt (nnetfd, SOL_SOCKET, SO_REUSEADDR, (char *)&x, sizeof (x));
 	if (rr == -1)
 		holler ("nnetfd reuseaddr failed");		/* ??? */
 #ifdef SO_REUSEPORT	/* doesnt exist everywhere... */
-#ifdef WIN32
-	rr = setsockopt (nnetfd, SOL_SOCKET, SO_REUSEPORT, &c, sizeof (c));
-#else
-	rr = setsockopt (nnetfd, SOL_SOCKET, SO_REUSEPORT, &x, sizeof (x));
-#endif
+	rr = setsockopt (nnetfd, SOL_SOCKET, SO_REUSEPORT, (char *)&x, sizeof (x));
 	if (rr == -1)
 		holler ("nnetfd reuseport failed");		/* ??? */
 #endif
@@ -1577,6 +1558,10 @@ main (int argc, char *argv[])
 	USHORT curport = 0;
 	char * randports = NULL;
 	int cycle = 0;
+#ifdef HAVE_BIND
+/* can *you* say "cc -yaddayadda netcat.c -lresolv -l44bsd" on SunLOSs? */
+  res_init();
+#endif
 
 #ifdef WIN32
 	/* Initialize Winsock */
@@ -1592,11 +1577,6 @@ main (int argc, char *argv[])
 	ding1 = (fd_set *) Hmalloc (sizeof (fd_set));
 	ding2 = (fd_set *) Hmalloc (sizeof (fd_set));
 	portpoop = (PINF *) Hmalloc (sizeof (PINF));
-
-#ifdef WIN32
-	setsockopt_c = (char *)malloc(sizeof(char));
-	*setsockopt_c	= 1;
-#endif
 
 	errno = 0;
 	gatesptr = 4;

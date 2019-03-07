@@ -7,7 +7,7 @@ endif
 #CC=x86_64-w64-mingw32-gcc
 CC=i686-w64-mingw32-gcc
 
-CFLAGS=-O2 -Wall -m32 -fno-strict-aliasing -fno-ident -DDEBUG -DWIN32 -D_CONSOLE -DTELNET -DGAPING_SECURITY_HOLE
+CFLAGS=-O2 -Wall -m32 -fno-strict-aliasing -fno-ident -DNDEBUG -DWIN32 -D_CONSOLE -DTELNET -DGAPING_SECURITY_HOLE
 LDFLAGS=-v -s -lws2_32
 
 OBJ = getopt.o doexec.o netcat.o 
