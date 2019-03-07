@@ -1,0 +1,18 @@
+CC=cl
+CFLAGS= -nologo -W1 -MT -DNDEBUG -DWIN32 -D_CONSOLE -DTELNET -DGAPING_SECURITY_HOLE
+
+all: nc.exe
+
+OBJS = netcat.obj \
+	doexec.obj \
+	getopt.obj
+
+.c.obj ::
+	$(CC) $(CFLAGS) /c $<
+
+nc.exe: $(OBJS)
+	link.exe /out:$@ $(OBJS)
+
+clean:
+	-del nc.exe
+	-del *.obj
