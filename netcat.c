@@ -30,9 +30,6 @@
 	backend progs to grab a pty and look like a real telnetd?!
 */
 
-#include "generic.h"		/* same as with L5, skey, etc */
-
-
 /* conditional includes -- a very messy section: */
 
 /* might need this for something? */
@@ -42,14 +39,11 @@
 /* #define ANAL */
 
 #include <stdlib.h>
-
-#include <sys/types.h>		/* *now* do it.  Sigh, this is broken */
 #include <stdarg.h>
 
 #define SRAND srand
 #define RAND rand
 
-/* xxx: these are rsh leftovers, move to new generic.h */
 /* will we even need any nonblocking shit?  Doubt it. */
 /* get FIONBIO from sys/filio.h, so what if it is a compatibility feature */
 /* #include <sys/filio.h> */
@@ -59,35 +53,33 @@
 */
 
 /* includes: */
-#include <setjmp.h>		/* jmp_buf et al */
+#include <setjmp.h>				/* jmp_buf et al */
 
 #ifndef WIN32
-#  include <sys/time.h>		/* timeval, time_t */
+#  include <sys/types.h>
+#  include <sys/time.h>			/* timeval, time_t */
 #  include <sys/socket.h>		/* basics, SO_ and AF_ defs, sockaddr, ... */
 #  include <netinet/in.h>		/* sockaddr_in, htons, in_addr */
 #  include <netinet/in_systm.h>	/* misc crud that netinet/ip.h references */
 #  include <netinet/ip.h>		/* IPOPT_LSRR, header stuff */
-#  include <netdb.h>		/* hostent, gethostby*, getservby* */
+#  include <netdb.h>			/* hostent, gethostby*, getservby* */
 #  include <arpa/inet.h>		/* inet_ntoa */
 #  define sclose(x) close((x))
 #else
-#  undef IP_OPTIONS
-#  undef SO_REUSEPORT
+	/* Prevent inclusion of <winsock*.h> in <windows.h>.  */
+#ifndef WIN32_LEAN_AND_MEAN
+# define WIN32_LEAN_AND_MEAN
+#endif
+#  include <windows.h>
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
-#  include <windows.h>
-#  ifdef _MSC_VER 
-#    pragma comment (lib, "ws2_32") /* winsock support */
-#  endif
 #  define sclose(x)  closesocket((x))
 #  include "getopt.h"
 #  define sleep(_x)		Sleep((_x)*1000)
 #  ifdef _MSC_VER 
 #    define strcasecmp _stricmp
+#    pragma comment(lib, "Ws2_32.lib")
 #  endif
-#  define EADDRINUSE		WSAEADDRINUSE
-#  define ETIMEDOUT		WSAETIMEDOUT
-#  define ECONNREFUSED	WSAECONNREFUSED
 #  include <time.h>
 #  include <io.h>
 #  include <conio.h>
@@ -101,14 +93,14 @@
 
 
 /* handy stuff: */
-#define SA struct sockaddr	/* socket overgeneralization braindeath */
+#define SA struct sockaddr		/* socket overgeneralization braindeath */
 #define SAI struct sockaddr_in	/* ... whoever came up with this model */
-#define IA struct in_addr	/* ... should be taken out and shot, */
-				/* ... not that TLI is any better.  sigh.. */
-#define SLEAZE_PORT 31337	/* for UDP-scan RTT trick, change if ya want */
+#define IA struct in_addr		/* ... should be taken out and shot, */
+								/* ... not that TLI is any better.  sigh.. */
+#define SLEAZE_PORT 31337		/* for UDP-scan RTT trick, change if ya want */
 #define USHORT unsigned short	/* use these for options an' stuff */
-#define BIGSIZ 8192		/* big buffers */
-#define SMALLSIZ 256		/* small buffers, hostnames, etc */
+#define BIGSIZ 8192				/* big buffers */
+#define SMALLSIZ 256			/* small buffers, hostnames, etc */
 
 #ifndef INADDR_NONE
   #define INADDR_NONE 0xffffffff
@@ -164,7 +156,6 @@ PINF * portpoop = NULL;		/* for getportpoop / getservby* */
 unsigned char * stage = NULL;	/* hexdump line buffer */
 
 #ifdef WIN32
-  char * setsockopt_c;
 int nnetfd;
 #endif
 
@@ -199,33 +190,33 @@ void helpme();
 
 
 #ifdef WIN32
-/* netcat_win32_init
+/* ws_init
    winsock needs to be initialized. */
-
-int netcat_win32_init(void)
+int ws_init(void)
 {
-	WORD wVersionRequested;
+	WORD wVersionRequested = MAKEWORD(1, 1);
 	WSADATA wsaData; 
-	int err;
- 
-	wVersionRequested = MAKEWORD(2,0);
-	err  = WSAStartup(wVersionRequested, &wsaData); 
- 
+	int err = WSAStartup(wVersionRequested, &wsaData); 
+
     if(err != 0) {
         fprintf(stderr, "WSAStartup failed with error: %d\n", err);
-        return -1;
+        exit(1);
     }
-		
-	if(LOBYTE(wsaData.wVersion) != LOBYTE(wVersionRequested) ||
-		HIBYTE(wsaData.wVersion) != HIBYTE(wVersionRequested)) {
+
+	if(wsaData.wVersion <  wVersionRequested) {
 		/* Our version isn't supported */
 		fprintf(stderr, "insufficient winsock version to support\n");
 		WSACleanup();
-		return -1;
+		exit(1);
 	}
 	return 0;
-}
+} /* ws_init */
 
+/* ws_cleanup */
+void ws_cleanup(void)
+{
+	WSACleanup();
+} /* ws_cleanup */
 
 /* winsockstr
    Windows Sockets cannot report errors through perror() so we need to define
@@ -441,6 +432,10 @@ HINF *gethostpoop (char *name, USHORT numeric)
 {
 	struct hostent *hostent;
 	struct in_addr iaddr;
+	struct addrinfo hints;
+	struct addrinfo *ptr;
+	struct addrinfo *res0;
+	struct sockaddr_in  *sockaddr_ipv4;
 	register HINF *poop = NULL;
 	register int x;
 
@@ -464,7 +459,15 @@ HINF *gethostpoop (char *name, USHORT numeric)
    things down a bit for a first run, but once it's cached, who cares? */
 
 	errno = 0;
-
+	// Verify which protocol to use UDP or TCP
+	memset(&hints, 0, sizeof(struct addrinfo));
+	if (o_udpmode)
+		hints.ai_socktype=SOCK_DGRAM;
+	else
+		hints.ai_socktype=SOCK_STREAM;
+	// It supports IPv4 only for now
+	hints.ai_socktype=AF_INET;
+	
 	if (name)
 		poop = (HINF *) Hmalloc (sizeof (HINF));
 	if (! poop)
@@ -475,17 +478,28 @@ HINF *gethostpoop (char *name, USHORT numeric)
 	if (iaddr.s_addr == INADDR_NONE) {	/* here's the great split: names... */
 		if (numeric)
 			bail ("Can't parse %s as an IP address", name);
-		hostent = gethostbyname (name);
-		if (! hostent)
-			/* failure to look up a name is fatal, since we can't do anything with it */
-			/* XXX: h_errno only if BIND?  look up how telnet deals with this */
-			bail ("%s: forward host lookup failed: h_errno %d - %ld", name, h_errno);
-		strncpy (poop->name, hostent->h_name, sizeof (poop->name));
-		for (x = 0; hostent->h_addr_list[x] && (x < 8); x++) {
-			memcpy (&poop->iaddrs[x], hostent->h_addr_list[x], sizeof (IA));
-			strncpy (poop->addrs[x], inet_ntoa (poop->iaddrs[x]),
-				     sizeof (poop->addrs[0]));
-		} /* for x -> addrs, part A */
+		// hostent = gethostbyname (name);
+		// if (! hostent)
+			// /* failure to look up a name is fatal, since we can't do anything with it */
+			// /* XXX: h_errno only if BIND?  look up how telnet deals with this */
+			// bail ("%s: forward host lookup failed: h_errno %d - %ld", name, h_errno);
+		if ((errno = getaddrinfo(name, NULL, &hints, &res0)))
+			printf("getaddrinfo for host \"%s\": %s\n", name,
+					gai_strerror(errno));
+		x=0;
+		for(ptr=res0; ptr; ptr=ptr->ai_next)
+		{
+			sockaddr_ipv4 = (struct sockaddr_in *) ptr->ai_addr;
+			strncpy (poop->name, name, sizeof (poop->name));
+			poop->iaddrs[x] = sockaddr_ipv4->sin_addr;
+			strncpy (poop->addrs[x], inet_ntoa (poop->iaddrs[x]), sizeof (poop->addrs[0]));
+			x++;
+		}
+		// for (x = 0; hostent->h_addr_list[x] && (x < 8); x++) {
+			// memcpy (&poop->iaddrs[x], ptr->ai_addr, sizeof (IA));
+			// strncpy (poop->addrs[x], inet_ntoa (poop->iaddrs[x]),
+				     // sizeof (poop->addrs[0]));
+		// } /* for x -> addrs, part A */
 		if (! o_verbose)			/* if we didn't want to see the */
 			return poop;			/* inverse stuff, we're done. */
 			/* do inverse lookups in separate loop based on our collected forward addrs,
@@ -1535,10 +1549,43 @@ shovel:
 	return 0;
 } /* readwrite */
 
+void helpme (void)
+{
+	fprintf(stderr, "[v1.0 Netcat JugLabs]\n"
+			"connect to somewhere:	nc [-options] hostname port[s] [ports] ... \n"
+			"listen for inbound:	nc -l -p port [options] [hostname] [port]\n"
+			"options:\n"
+			"	-d		detach from console, background mode\n"
+#ifdef GAPING_SECURITY_HOLE
+			"	-e prog		inbound program to exec [dangerous!!]\n"
+#endif
+			"	-g gateway	source-routing hop point[s], up to 8\n"
+			"	-G num		source-routing pointer: 4, 8, 12, ...\n"
+			"	-h		this cruft\n"
+			"	-i secs		delay interval for lines sent, ports scanned\n"
+			"	-l		listen mode, for inbound connects\n"
+			"	-L		listen harder, re-listen on socket close\n"
+			"	-n		numeric-only IP addresses, no DNS\n"
+			"	-o file		hex dump of traffic\n"
+			"	-p port		local port number\n"
+			"	-r		randomize local and remote ports\n"
+			"	-s addr		local source address\n"
+#ifdef TELNET
+			"	-t		answer TELNET negotiation\n"
+#endif
+			"	-c		send CRLF instead of just LF\n"
+			"	-u		UDP mode\n"
+			"	-v		verbose [use twice to be more verbose]\n"
+			"	-w secs		timeout for connects and final net reads\n"
+			"	-z		zero-I/O mode [used for scanning]\n"
+			"port numbers can be individual or ranges: m-n [inclusive]\n");
+	exit(1);
+} /* helpme */
+
+
 /* main :
    now we pull it all together... */
-int
-main (int argc, char *argv[])
+int main (int argc, char *argv[])
 {
 #ifndef HAVE_GETOPT
 	extern char * optarg;
@@ -1565,7 +1612,7 @@ main (int argc, char *argv[])
 
 #ifdef WIN32
 	/* Initialize Winsock */
-	netcat_win32_init();
+	ws_init();
 #endif
 
 /* I was in this barbershop quartet in Skokie IL ... */
@@ -1908,7 +1955,7 @@ recycle:
 		holler ("sent %d, rcvd %d", wrote_net, wrote_out);
 
 #ifdef WIN32
-	WSACleanup(); 
+	ws_cleanup(); 
 #endif
 
   	if (cycle == 1)
@@ -1919,38 +1966,6 @@ recycle:
 	return 0;
 } /* main */
 
-void helpme (void)
-{
-	fprintf(stderr, "[v1.0 Netcat JugLabs]\n"
-			"connect to somewhere:	nc [-options] hostname port[s] [ports] ... \n"
-			"listen for inbound:	nc -l -p port [options] [hostname] [port]\n"
-			"options:\n"
-			"	-d		detach from console, background mode\n"
-#ifdef GAPING_SECURITY_HOLE
-			"	-e prog		inbound program to exec [dangerous!!]\n"
-#endif
-			"	-g gateway	source-routing hop point[s], up to 8\n"
-			"	-G num		source-routing pointer: 4, 8, 12, ...\n"
-			"	-h		this cruft\n"
-			"	-i secs		delay interval for lines sent, ports scanned\n"
-			"	-l		listen mode, for inbound connects\n"
-			"	-L		listen harder, re-listen on socket close\n"
-			"	-n		numeric-only IP addresses, no DNS\n"
-			"	-o file		hex dump of traffic\n"
-			"	-p port		local port number\n"
-			"	-r		randomize local and remote ports\n"
-			"	-s addr		local source address\n"
-#ifdef TELNET
-			"	-t		answer TELNET negotiation\n"
-#endif
-			"	-c		send CRLF instead of just LF\n"
-			"	-u		UDP mode\n"
-			"	-v		verbose [use twice to be more verbose]\n"
-			"	-w secs		timeout for connects and final net reads\n"
-			"	-z		zero-I/O mode [used for scanning]\n"
-			"port numbers can be individual or ranges: m-n [inclusive]\n");
-	exit(1);
-} /* helpme */
 
 
 /* None genuine without this seal!  _H*/
