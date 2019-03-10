@@ -1958,7 +1958,7 @@ recycle:
 	ws_cleanup(); 
 #endif
 
-  	if (cycle == 1)
+	if (cycle == 1)
 		goto recycle;
 
 	if (Single)
